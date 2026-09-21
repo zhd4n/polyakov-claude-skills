@@ -58,6 +58,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ -n "${FAKE_UNAUTHORIZED_ONCE:-}" ] && [ ! -e "$FAKE_UNAUTHORIZED_ONCE" ]; then
+    : > "$FAKE_UNAUTHORIZED_ONCE"
+    printf '{"code":16,"message":"Token expired"}' > "$response_file"
+    : > "$headers_file"
+    printf 401
+    exit 0
+fi
 printf '%s' "${FAKE_BODY:-{}}" > "$response_file"
 : > "$headers_file"
 printf '%s' "${FAKE_STATUS:-200}"
@@ -150,5 +157,28 @@ fi
     echo 'FAIL: valid cached IAM token triggered regeneration'
     exit 1
 }
+
+# A cold IAM cache must lazily generate a token exactly once.
+cat > "$td/skill/scripts/iam_token_get.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'called\n' >> "${IAM_MARKER:?}"
+mkdir -p "$(dirname "$0")/../cache"
+printf '{"iam_token":"generated-iam-secret","expires_at":4102444800}' > "$(dirname "$0")/../cache/iam_token.json"
+EOF
+rm "$td/skill/cache/iam_token.json" "$CURL_CAPTURE"
+sh "$td/skill/scripts/harness.sh" >"$td/cold.out"
+[ "$(wc -l < "$IAM_MARKER" | tr -d ' ')" = 1 ] || { echo 'FAIL: cold cache generated token more than once'; exit 1; }
+grep -Fxq 'Authorization: Bearer generated-iam-secret' "$CURL_CAPTURE" || { echo 'FAIL: generated token not sent'; exit 1; }
+
+# A rejected cached IAM token gets one refresh and one retry with the new token.
+printf '{"iam_token":"old-iam-secret","expires_at":4102444800}' > "$td/skill/cache/iam_token.json"
+rm "$IAM_MARKER" "$CURL_CAPTURE"
+FAKE_UNAUTHORIZED_ONCE="$td/unauthorized-once" sh "$td/skill/scripts/harness.sh" >"$td/refreshed.out"
+[ "$(wc -l < "$IAM_MARKER" | tr -d ' ')" = 1 ] || { echo 'FAIL: expected one refresh'; exit 1; }
+[ "$(grep -c '^--- request ---$' "$CURL_CAPTURE")" = 2 ] || { echo 'FAIL: expected one retry'; exit 1; }
+grep '^Authorization:' "$CURL_CAPTURE" > "$td/actual-headers"
+printf '%s\n' 'Authorization: Bearer old-iam-secret' 'Authorization: Bearer generated-iam-secret' > "$td/expected-headers"
+cmp "$td/expected-headers" "$td/actual-headers" || { echo 'FAIL: wrong retry authorization'; exit 1; }
 
 echo PASS

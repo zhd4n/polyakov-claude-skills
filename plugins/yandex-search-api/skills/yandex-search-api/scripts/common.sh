@@ -154,7 +154,7 @@ cloud_auth_mode() {
 # Print one complete Authorization header. Callers must pass it directly to
 # curl and must never log the result.
 cloud_auth_header() {
-    _cah_mode=$(cloud_auth_mode) || return 1
+    _cah_mode="$1"
 
     case "$_cah_mode" in
         api_key)
@@ -322,7 +322,7 @@ http_request() {
             403)
                 echo "Error: 403 Forbidden. Check:" >&2
                 echo "  - Role 'search-api.webSearch.user' assigned to the key subject" >&2
-                echo "  - API-key scope 'yc.search-api.execute'" >&2
+                echo "  - For API-key mode: scope 'yc.search-api.execute'" >&2
                 echo "  - Correct folder_id in config.json" >&2
                 cat "$_resp_file" >&2
                 rm -rf "$_tmpdir_http" "$_hr_tmpdir"
@@ -359,7 +359,7 @@ auth_request() {
     _ar_body="$3"
 
     _auth_mode=$(cloud_auth_mode) || return 1
-    _auth_header=$(cloud_auth_header) || return 1
+    _auth_header=$(cloud_auth_header "$_auth_mode") || return 1
 
     _folder_id=$(cfg_get "yandex_cloud_folder_id")
     if [ -z "$_folder_id" ]; then
@@ -376,7 +376,7 @@ auth_request() {
             echo "Token expired, auto-refreshing..." >&2
             rm -f "$CACHE_DIR/iam_token.json"
             sh "$SCRIPT_DIR/iam_token_get.sh" >&2 || { echo "Error: Token refresh failed" >&2; return 1; }
-            _auth_header=$(cloud_auth_header) || return 1
+            _auth_header=$(cloud_auth_header "$_auth_mode") || return 1
             if [ -z "$_auth_header" ]; then
                 echo "Error: Token refresh produced no token" >&2
                 return 1
